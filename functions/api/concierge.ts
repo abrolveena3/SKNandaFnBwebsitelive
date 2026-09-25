@@ -33,26 +33,28 @@ Tone & Instructions:
 - Encourage seamless consultation via WhatsApp (+91 98731 55544) or scheduling an executive tasting at the Bijwasan estate.
 - Keep responses concise, evocative, and luxurious (2-4 paragraphs max).`;
 
-// Active Google Gemini models
+// Production-ready active Google Gemini models verified against your project
 const MODEL_CASCADE = [
-  "gemini-3.8-flash",       // Primary: Fast, full context window
-  "gemini-3.7-flash",       // Secondary: High availability backup
-  "gemini-3.5-flash",       // Tertiary fallback
-  "gemini-2.5-flash",       // Stable legacy fallback
+  "gemini-3.8-flash",       // Primary: Fastest & newest Flash model
+  "gemini-3.7-flash",       // High-availability backup
+  "gemini-3.5-flash",       // Secondary backup
+  "gemini-2.5-flash",       // Stable fallback
   "gemini-flash-latest"     // Alias fallback
 ];
 
-async function callGeminiModel(
+/**
+  Executes a single HTTP call to the Gemini REST API
+ */
+async function singleGeminiCall(
   model: string,
   apiKey: string,
   contents: any[],
   systemInstruction: string
 ): Promise<string> {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 20000);
+  const timeoutId = setTimeout(() => controller.abort(), 15000); // 15s request timeout
 
-  // Clean payload compliant with Gemini REST v1beta spec
-  const payload: any = {
+  const payload = {
     contents,
     systemInstruction: {
       parts: [{ text: systemInstruction }]
@@ -76,12 +78,12 @@ async function callGeminiModel(
       signal: controller.signal
     });
 
-    clearTimeout(timeoutId);
-
     if (!response.ok) {
       const errStatus = response.status;
       const errText = await response.text();
-      throw new Error(`Model ${model} returned HTTP ${errStatus}: ${errText}`);
+      const err = new Error(`Model ${model} returned HTTP ${errStatus}: ${errText}`);
+      (err as any).status = errStatus;
+      throw err;
     }
 
     const data: any = await response.json();
@@ -96,6 +98,52 @@ async function callGeminiModel(
   } finally {
     clearTimeout(timeoutId);
   }
+}
+
+/**
+ * Wraps singleGeminiCall with Exponential Backoff + Random Jitter for transient errors (429/503)
+ */
+async function callGeminiWithRetry(
+  model: string,
+  apiKey: string,
+  contents: any[],
+  systemInstruction: string,
+  maxRetries = 2
+): Promise<string> {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await singleGeminiCall(model, apiKey, contents, systemInstruction);
+    } catch (err: any) {
+      const status = err?.status || 0;
+      const errMsg = err?.message || '';
+      
+      // Check if error is transient (HTTP 429 Rate Limit / Quota Spikes or HTTP 503 Server Overload)
+      const isTransient =
+        status === 429 ||
+        status === 503 ||
+        errMsg.includes('429') ||
+        errMsg.includes('503') ||
+        errMsg.includes('UNAVAILABLE') ||
+        errMsg.includes('RESOURCE_EXHAUSTED');
+
+      if (!isTransient || attempt === maxRetries) {
+        throw err; // Pass error up to step down to the next model in CASCADE
+      }
+
+      // Exponential backoff formula: baseDelay * 2^attempt + jitter (0-150ms)
+      const baseDelay = 300; // 300ms initial wait
+      const jitter = Math.floor(Math.random() * 150);
+      const delay = Math.pow(2, attempt) * baseDelay + jitter;
+
+      console.warn(
+        `[Concierge Retry] ${model} hit HTTP ${status}. Retrying attempt ${attempt + 1}/${maxRetries} after ${delay}ms...`
+      );
+
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+
+  throw new Error(`Failed to call ${model} after ${maxRetries} retries.`);
 }
 
 export const onRequestOptions = async () => {
@@ -142,7 +190,7 @@ export const onRequestPost = async (context: {
       );
     }
 
-    // Sanitize and format chat history for Gemini API
+    // Format multi-turn conversation history
     const contents: any[] = [];
     let lastRole: string | null = null;
 
@@ -156,10 +204,9 @@ export const onRequestPost = async (context: {
 
         if (!text) continue;
 
-        // Force role mapping exclusively to 'user' or 'model'
+        // Force strictly 'user' or 'model'
         const role = (item.role === 'assistant' || item.role === 'model') ? 'model' : 'user';
 
-        // Prevent duplicate consecutive roles (which break multi-turn history)
         if (role !== lastRole) {
           contents.push({
             role,
@@ -167,14 +214,14 @@ export const onRequestPost = async (context: {
           });
           lastRole = role;
         } else {
-          // Append text to the existing turn if role matches
+          // Merge consecutive identical roles to prevent Gemini turn sequence errors
           const lastIndex = contents.length - 1;
           contents[lastIndex].parts[0].text += `\n${text}`;
         }
       }
     }
 
-    // Append latest user message safely maintaining alternating sequence
+    // Append latest user prompt
     if (contents.length > 0 && contents[contents.length - 1].role === 'user') {
       contents[contents.length - 1].parts[0].text += `\n${userMessage}`;
     } else {
@@ -194,16 +241,17 @@ export const onRequestPost = async (context: {
       );
     }
 
-    let lastError = null;
+    // Iterate through cascade: Each model gets up to 3 tries (1 original + 2 retries with jitter)
     for (const model of MODEL_CASCADE) {
       try {
-        const reply = await callGeminiModel(
+        const reply = await callGeminiWithRetry(
           model,
           apiKey,
           contents,
-          SYSTEM_PROMPT
+          SYSTEM_PROMPT,
+          2 // maxRetries
         );
-        console.log(`[Concierge Success] Served by model: ${model}, Turns: ${contents.length}`);
+        console.log(`[Concierge Success] Served by model: ${model}`);
         return new Response(
           JSON.stringify({
             reply,
@@ -213,12 +261,11 @@ export const onRequestPost = async (context: {
           { status: 200, headers }
         );
       } catch (err: any) {
-        lastError = err;
-        console.warn(`[Concierge] Cascade step failed for ${model}:`, err?.message || err);
+        console.warn(`[Concierge Cascade] Model ${model} failed after retries:`, err?.message || err);
       }
     }
 
-    // Fallback response if all models fail
+    // Static fallback if all retries and cascade options are exhausted
     return new Response(
       JSON.stringify({
         reply: `Thank you for reaching out to SK Nanda Catering. Our directors are currently attending to banquet tastings. You can connect with Mr. Pratik Nanda and Mr. Manan Nanda directly on WhatsApp at +91 98731 55544 for instant event consultations and custom menus.`,
@@ -227,7 +274,7 @@ export const onRequestPost = async (context: {
       { status: 200, headers }
     );
   } catch (err: any) {
-    console.error(`[Concierge Error]:`, err?.message || err);
+    console.error(`[Concierge Fatal Error]:`, err?.message || err);
     return new Response(
       JSON.stringify({
         reply: `Our culinary concierge is momentarily assisting other patrons. Please contact our directors directly on WhatsApp at +91 98731 55544.`
