@@ -35,9 +35,11 @@ Tone & Instructions:
 
 // Active Google Gemini models
 const MODEL_CASCADE = [
-  "gemini-3.8-flash",         // Primary: Ultra-fast & recommended standard model
-  "gemini-3.1-pro-preview",   // Backup 1: High-capability reasoning model
-  "gemini-2.5-flash-lite"     // Backup 2: Lightweight fallback
+  "gemini-3.8-flash",       // Primary: Fast, full context window
+  "gemini-3.7-flash",       // Secondary: High availability backup
+  "gemini-3.5-flash",       // Tertiary fallback
+  "gemini-2.5-flash",       // Stable legacy fallback
+  "gemini-flash-latest"     // Alias fallback
 ];
 
 async function callGeminiModel(
