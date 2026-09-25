@@ -33,7 +33,7 @@ Tone & Instructions:
 - Encourage seamless consultation via WhatsApp (+91 98731 55544) or scheduling an executive tasting at the Bijwasan estate.
 - Keep responses concise, evocative, and luxurious (2-4 paragraphs max).`;
 
-// Production-ready active Google Gemini models
+// Active Google Gemini models
 const MODEL_CASCADE = [
   "gemini-3.8-flash",         // Primary: Ultra-fast & recommended standard model
   "gemini-3.1-pro-preview",   // Backup 1: High-capability reasoning model
@@ -140,28 +140,47 @@ export const onRequestPost = async (context: {
       );
     }
 
-    // Format chat history for Gemini API
+    // Sanitize and format chat history for Gemini API
     const contents: any[] = [];
+    let lastRole: string | null = null;
+
     if (Array.isArray(body.history)) {
       for (const item of body.history) {
-        const text =
+        const text = (
           item.content ||
           (item.parts && item.parts[0]?.text) ||
-          '';
-        if (text) {
+          ''
+        ).trim();
+
+        if (!text) continue;
+
+        // Force role mapping exclusively to 'user' or 'model'
+        const role = (item.role === 'assistant' || item.role === 'model') ? 'model' : 'user';
+
+        // Prevent duplicate consecutive roles (which break multi-turn history)
+        if (role !== lastRole) {
           contents.push({
-            role: item.role === 'assistant' ? 'model' : 'user',
+            role,
             parts: [{ text }]
           });
+          lastRole = role;
+        } else {
+          // Append text to the existing turn if role matches
+          const lastIndex = contents.length - 1;
+          contents[lastIndex].parts[0].text += `\n${text}`;
         }
       }
     }
 
-    // Append latest user message
-    contents.push({
-      role: 'user',
-      parts: [{ text: userMessage }]
-    });
+    // Append latest user message safely maintaining alternating sequence
+    if (contents.length > 0 && contents[contents.length - 1].role === 'user') {
+      contents[contents.length - 1].parts[0].text += `\n${userMessage}`;
+    } else {
+      contents.push({
+        role: 'user',
+        parts: [{ text: userMessage }]
+      });
+    }
 
     if (!apiKey) {
       return new Response(
@@ -173,7 +192,6 @@ export const onRequestPost = async (context: {
       );
     }
 
-    // Cascade: gemini-2.5-flash -> gemini-2.5-pro -> gemini-1.5-flash
     let lastError = null;
     for (const model of MODEL_CASCADE) {
       try {
@@ -183,6 +201,7 @@ export const onRequestPost = async (context: {
           contents,
           SYSTEM_PROMPT
         );
+        console.log(`[Concierge Success] Served by model: ${model}, Turns: ${contents.length}`);
         return new Response(
           JSON.stringify({
             reply,
@@ -206,6 +225,7 @@ export const onRequestPost = async (context: {
       { status: 200, headers }
     );
   } catch (err: any) {
+    console.error(`[Concierge Error]:`, err?.message || err);
     return new Response(
       JSON.stringify({
         reply: `Our culinary concierge is momentarily assisting other patrons. Please contact our directors directly on WhatsApp at +91 98731 55544.`
