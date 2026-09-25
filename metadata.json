@@ -1,0 +1,6 @@
+{
+  "name": "SK Nanda F&B | Luxury Catering & Culinary Experiences",
+  "description": "SK Nanda F&B crafts extraordinary culinary experiences, theatrical live stations, and bespoke catering for luxury weddings and events.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
