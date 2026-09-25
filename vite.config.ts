@@ -203,9 +203,12 @@ export default defineConfig(() => {
             }
 
             if (pathName.startsWith('/uploads/')) {
-              const filePath = path.resolve(import.meta.dirname, 'public' + pathName);
+              const decodedPath = decodeURIComponent(pathName);
+              const filePath = path.resolve(import.meta.dirname, 'public' + decodedPath);
               if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
-                res.writeHead(200, {'Content-Type': 'image/jpeg'});
+                const ext = path.extname(filePath).toLowerCase();
+                const mimeType = ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp' : 'image/jpeg';
+                res.writeHead(200, {'Content-Type': mimeType});
                 fs.createReadStream(filePath).pipe(res);
                 return;
               }
