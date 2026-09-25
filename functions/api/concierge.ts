@@ -33,11 +33,11 @@ Tone & Instructions:
 - Encourage seamless consultation via WhatsApp (+91 98731 55544) or scheduling an executive tasting at the Bijwasan estate.
 - Keep responses concise, evocative, and luxurious (2-4 paragraphs max).`;
 
-// Exact Models requested by client with primary + 2 backups:
+// Production-ready active Google Gemini models
 const MODEL_CASCADE = [
-  "gemini-3.5-flash-lite", // Primary
-  "gemini-3.5-flash",      // Backup 1
-  "gemini-flash-latest"    // Backup 2
+  "gemini-2.5-flash", // Primary: Ultra-fast & high throughput
+  "gemini-2.5-pro",   // Backup 1: Complex reasoning & high quality
+  "gemini-1.5-flash"  // Backup 2: Stable legacy fallback
 ];
 
 async function callGeminiModel(
@@ -47,28 +47,23 @@ async function callGeminiModel(
   systemInstruction: string
 ): Promise<string> {
   const controller = new AbortController();
-  // Client requirement: 20s timeout
   const timeoutId = setTimeout(() => controller.abort(), 20000);
 
+  // Clean payload compliant with Gemini REST v1beta spec
   const payload: any = {
     contents,
     systemInstruction: {
       parts: [{ text: systemInstruction }]
     },
     generationConfig: {
-      // Client requirements: maxOutputTokens 2048, thinkingBudget 0
       maxOutputTokens: 2048,
-      temperature: 0.7,
-      thinkingConfig: {
-        thinkingBudget: 0
-      }
+      temperature: 0.7
     }
   };
 
   try {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
     
-    // Client requirement: use x-goog-api-key header to not expose the api key in post or error fetch
     const response = await fetch(url, {
       method: 'POST',
       headers: {
@@ -83,7 +78,8 @@ async function callGeminiModel(
 
     if (!response.ok) {
       const errStatus = response.status;
-      throw new Error(`Model ${model} returned HTTP ${errStatus}`);
+      const errText = await response.text();
+      throw new Error(`Model ${model} returned HTTP ${errStatus}: ${errText}`);
     }
 
     const data: any = await response.json();
@@ -91,7 +87,7 @@ async function callGeminiModel(
     const textPart = candidate?.content?.parts?.[0]?.text;
 
     if (!textPart) {
-      throw new Error(`Empty response from model ${model}`);
+      throw new Error(`Empty response structure from model ${model}`);
     }
 
     return textPart;
@@ -121,7 +117,6 @@ export const onRequestPost = async (context: {
   };
 
   try {
-    // Look up API key in Cloudflare Pages environment variables
     const apiKey =
       context.env?.GEMINI_API_KEY ||
       context.env?.GOOGLE_API_KEY ||
@@ -168,7 +163,6 @@ export const onRequestPost = async (context: {
       parts: [{ text: userMessage }]
     });
 
-    // If no Cloudflare API key configured yet, return intelligent concierge guidance
     if (!apiKey) {
       return new Response(
         JSON.stringify({
@@ -179,7 +173,7 @@ export const onRequestPost = async (context: {
       );
     }
 
-    // Model Cascade: Primary -> Backup 1 -> Backup 2
+    // Cascade: gemini-2.5-flash -> gemini-2.5-pro -> gemini-1.5-flash
     let lastError = null;
     for (const model of MODEL_CASCADE) {
       try {
@@ -200,11 +194,10 @@ export const onRequestPost = async (context: {
       } catch (err: any) {
         lastError = err;
         console.warn(`[Concierge] Cascade step failed for ${model}:`, err?.message || err);
-        // Continue to next model in cascade
       }
     }
 
-    // If all 3 models in cascade failed, provide graceful concierge response
+    // Fallback response if all models fail
     return new Response(
       JSON.stringify({
         reply: `Thank you for reaching out to SK Nanda Catering. Our directors are currently attending to banquet tastings. You can connect with Mr. Pratik Nanda and Mr. Manan Nanda directly on WhatsApp at +91 98731 55544 for instant event consultations and custom menus.`,
@@ -213,7 +206,6 @@ export const onRequestPost = async (context: {
       { status: 200, headers }
     );
   } catch (err: any) {
-    // Never expose API keys or internal stack traces in response
     return new Response(
       JSON.stringify({
         reply: `Our culinary concierge is momentarily assisting other patrons. Please contact our directors directly on WhatsApp at +91 98731 55544.`
