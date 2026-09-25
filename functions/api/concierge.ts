@@ -35,9 +35,9 @@ Tone & Instructions:
 
 // Exact Models requested by client with primary + 2 backups:
 const MODEL_CASCADE = [
-  'gemini-2.5-flash-lite', // Primary
-  'gemini-2.5-flash',      // Backup 1
-  'gemini-flash-latest'    // Backup 2
+  "gemini-3.5-flash-lite", // Primary
+  "gemini-3.5-flash",      // Backup 1
+  "gemini-flash-latest"    // Backup 2
 ];
 
 async function callGeminiModel(
